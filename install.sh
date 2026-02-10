@@ -1,26 +1,26 @@
 #!/bin/bash
 # peon-ping installer
 # Works both via `curl | bash` (downloads from GitHub) and local clone
-# Re-running updates core files without re-downloading sounds
+# Re-running updates core files; re-downloads sounds only when packs change
 set -euo pipefail
 
 INSTALL_DIR="$HOME/.claude/hooks/peon-ping"
 SETTINGS="$HOME/.claude/settings.json"
 REPO_BASE="https://raw.githubusercontent.com/tonyyont/peon-ping/main"
 
+# All available sound packs (add new packs here)
+PACKS="peon"
+
 # --- Detect update vs fresh install ---
 UPDATING=false
-if [ -f "$INSTALL_DIR/peon.sh" ] && [ -d "$INSTALL_DIR/packs/peon/sounds" ]; then
-  SOUND_COUNT=$(ls "$INSTALL_DIR/packs/peon/sounds/"*.wav 2>/dev/null | wc -l | tr -d ' ')
-  if [ "$SOUND_COUNT" -gt 0 ]; then
-    UPDATING=true
-  fi
+if [ -f "$INSTALL_DIR/peon.sh" ]; then
+  UPDATING=true
 fi
 
 if [ "$UPDATING" = true ]; then
   echo "=== peon-ping updater ==="
   echo ""
-  echo "Existing install found. Updating core files (sounds preserved)..."
+  echo "Existing install found. Updating..."
 else
   echo "=== peon-ping installer ==="
   echo ""
@@ -47,6 +47,17 @@ if [ ! -d "$HOME/.claude" ]; then
   exit 1
 fi
 
+# --- Snapshot manifest hashes before update ---
+declare -A OLD_HASHES 2>/dev/null || true
+for pack in $PACKS; do
+  manifest="$INSTALL_DIR/packs/$pack/manifest.json"
+  if [ -f "$manifest" ]; then
+    OLD_HASHES[$pack]=$(md5 -q "$manifest" 2>/dev/null || echo "none")
+  else
+    OLD_HASHES[$pack]="none"
+  fi
+done
+
 # --- Detect if running from local clone or curl|bash ---
 SCRIPT_DIR=""
 if [ -n "${BASH_SOURCE[0]:-}" ] && [ "${BASH_SOURCE[0]}" != "bash" ]; then
@@ -57,14 +68,16 @@ if [ -n "${BASH_SOURCE[0]:-}" ] && [ "${BASH_SOURCE[0]}" != "bash" ]; then
 fi
 
 # --- Install/update core files ---
-mkdir -p "$INSTALL_DIR"/{packs/peon,scripts}
+for pack in $PACKS; do
+  mkdir -p "$INSTALL_DIR/packs/$pack"
+done
+mkdir -p "$INSTALL_DIR/scripts"
 
 if [ -n "$SCRIPT_DIR" ]; then
   # Local clone — copy files directly
   cp -r "$SCRIPT_DIR/packs/"* "$INSTALL_DIR/packs/"
   cp "$SCRIPT_DIR/scripts/download-sounds.sh" "$INSTALL_DIR/scripts/"
   cp "$SCRIPT_DIR/peon.sh" "$INSTALL_DIR/"
-  # Only overwrite config on fresh install (preserve user customizations)
   if [ "$UPDATING" = false ]; then
     cp "$SCRIPT_DIR/config.json" "$INSTALL_DIR/"
   fi
@@ -72,10 +85,11 @@ else
   # curl|bash — download from GitHub
   echo "Downloading from GitHub..."
   curl -fsSL "$REPO_BASE/peon.sh" -o "$INSTALL_DIR/peon.sh"
-  curl -fsSL "$REPO_BASE/packs/peon/manifest.json" -o "$INSTALL_DIR/packs/peon/manifest.json"
   curl -fsSL "$REPO_BASE/scripts/download-sounds.sh" -o "$INSTALL_DIR/scripts/download-sounds.sh"
   curl -fsSL "$REPO_BASE/uninstall.sh" -o "$INSTALL_DIR/uninstall.sh"
-  # Only overwrite config on fresh install (preserve user customizations)
+  for pack in $PACKS; do
+    curl -fsSL "$REPO_BASE/packs/$pack/manifest.json" -o "$INSTALL_DIR/packs/$pack/manifest.json"
+  done
   if [ "$UPDATING" = false ]; then
     curl -fsSL "$REPO_BASE/config.json" -o "$INSTALL_DIR/config.json"
   fi
@@ -84,13 +98,25 @@ fi
 chmod +x "$INSTALL_DIR/peon.sh"
 chmod +x "$INSTALL_DIR/scripts/download-sounds.sh"
 
-# --- Download sounds (skip on update if already present) ---
-if [ "$UPDATING" = false ]; then
-  echo ""
-  bash "$INSTALL_DIR/scripts/download-sounds.sh" "$INSTALL_DIR" "peon"
-else
-  echo "Sounds already installed ($SOUND_COUNT files) — skipped."
-fi
+# --- Download sounds per pack (skip if manifest unchanged) ---
+echo ""
+for pack in $PACKS; do
+  manifest="$INSTALL_DIR/packs/$pack/manifest.json"
+  new_hash=$(md5 -q "$manifest" 2>/dev/null || echo "new")
+  old_hash="${OLD_HASHES[$pack]:-none}"
+  sound_dir="$INSTALL_DIR/packs/$pack/sounds"
+  sound_count=$(ls "$sound_dir"/*.wav 2>/dev/null | wc -l | tr -d ' ' 2>/dev/null || echo "0")
+
+  if [ "$old_hash" = "none" ] || [ "$sound_count" -eq 0 ]; then
+    echo "[$pack] New pack — downloading sounds..."
+    bash "$INSTALL_DIR/scripts/download-sounds.sh" "$INSTALL_DIR" "$pack"
+  elif [ "$old_hash" != "$new_hash" ]; then
+    echo "[$pack] Pack updated — re-downloading sounds..."
+    bash "$INSTALL_DIR/scripts/download-sounds.sh" "$INSTALL_DIR" "$pack"
+  else
+    echo "[$pack] Sounds up to date ($sound_count files)."
+  fi
+done
 
 # --- Backup existing notify.sh (fresh install only) ---
 if [ "$UPDATING" = false ]; then
@@ -165,7 +191,15 @@ fi
 # --- Test sound ---
 echo ""
 echo "Testing sound..."
-PACK_DIR="$INSTALL_DIR/packs/peon"
+ACTIVE_PACK=$(/usr/bin/python3 -c "
+import json, os
+try:
+    c = json.load(open(os.path.expanduser('~/.claude/hooks/peon-ping/config.json')))
+    print(c.get('active_pack', 'peon'))
+except:
+    print('peon')
+" 2>/dev/null)
+PACK_DIR="$INSTALL_DIR/packs/$ACTIVE_PACK"
 TEST_SOUND=$(ls "$PACK_DIR/sounds/"*.wav 2>/dev/null | head -1)
 if [ -n "$TEST_SOUND" ]; then
   afplay -v 0.3 "$TEST_SOUND"
@@ -179,7 +213,7 @@ if [ "$UPDATING" = true ]; then
   echo "=== Update complete! ==="
   echo ""
   echo "Updated: peon.sh, manifest.json"
-  echo "Preserved: config.json, sounds, state"
+  echo "Preserved: config.json, state"
 else
   echo "=== Installation complete! ==="
   echo ""
