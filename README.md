@@ -1,6 +1,6 @@
 # peon-ping
 
-![macOS](https://img.shields.io/badge/macOS-blue) ![WSL2](https://img.shields.io/badge/WSL2-blue)
+![Windows](https://img.shields.io/badge/Windows-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Claude Code](https://img.shields.io/badge/Claude_Code-hook-ffab01)
 
