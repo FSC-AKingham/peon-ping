@@ -11,7 +11,7 @@ Toggle peon-ping sounds on or off.
 Run the following command using the Bash tool:
 
 ```bash
-bash ~/.claude/hooks/peon-ping/peon.sh --toggle
+python3 ~/.claude/hooks/peon-ping/peon.py --toggle 2>/dev/null || python ~/.claude/hooks/peon-ping/peon.py --toggle
 ```
 
 Report the output to the user. The command will print either:
